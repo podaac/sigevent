@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PO.DAAC Sigevent Daily Report</title>
+</head>
+<style>
+table, th, td {
+  border: 1px solid black;
+}
+</style>
+<body>
+    <h1>PO.DAAC Sigevent Daily Summary</h1>
+    <h2>{{ today }}</h2>
+    <br>
+    {{ num_collections }}/{{ total_num_collections }} collections. See attachment for the full summary
+    <br>
+    <br>
+    <table>
+        <tr>
+            <th>Collection Name</th>
+            <th>Errors</th>
+            <th>Warns</th>
+            <th>Info</th>
+            <th>Debug</th>
+            <th>Categories</th>
+        </tr>
+        {% for collection in analyses %}
+        <tr>
+            <td>{{ collection['name'] }}</td>
+            {% for count in collection['level_counts'].values() %}
+            <td>{{ count }}</td>
+            {% endfor %}
+            <td>
+                {% for category, count in collection['category_counts'].items() %}
+                    {{ category }}: {{ count }}<br>
+                {% endfor %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
