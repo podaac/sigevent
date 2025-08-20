@@ -115,7 +115,7 @@ resource "aws_iam_role_policy_attachment" "event_handler-allow_cloudwatch_loggin
 
 resource "aws_iam_role_policy_attachment" "event_handler-allow_ses_send" {
   role = aws_iam_role.event_handler.name
-  policy_arn = aws_iam_policy.allow_ses_send.arn
+  policy_arn = aws_iam_policy.allow_ses_send[0].arn
 }
 
 resource "aws_iam_role_policy_attachment" "daily_report-allow_ssm_access" {
@@ -133,7 +133,7 @@ resource "aws_iam_role_policy_attachment" "daily_report-allow_cloudwatch_logging
 resource "aws_iam_role_policy_attachment" "daily_report-allow_ses_send" {
   count = var.muted_mode ? 0 : 1
   role = aws_iam_role.daily_report[0].name
-  policy_arn = aws_iam_policy.allow_ses_send.arn
+  policy_arn = aws_iam_policy.allow_ses_send[0].arn
 }
 
 // -- Role IAM Policies
@@ -154,6 +154,8 @@ resource "aws_iam_role_policy" "daily_report" {
 
 // -- Shared IAM Policies
 resource "aws_iam_policy" "allow_ses_send" {
+  count = var.muted_mode ? 0 : 1
+
   name_prefix = "AllowSESSend"
   policy = jsonencode({
     Version = "2012-10-17"
