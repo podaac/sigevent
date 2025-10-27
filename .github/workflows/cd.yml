@@ -1,0 +1,70 @@
+name: CD
+on:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      Environment:
+        description: 'Target environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - SIT
+          - UAT
+          - OPS
+
+jobs:
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-slim-trixie
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup poetry
+        uses: ./.github/actions/install-poetry
+      - name: Build package
+        uses: ./.github/actions/build
+        with:
+          artifact-name: sigevent-wheel
+
+  deploy:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: [build]
+    container:
+      image: hashicorp/terraform:1.13
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets[format('AWS_ACCESS_KEY_ID_CUMULUS_{0}', inputs.Environment)] }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_CUMULUS_{0}', inputs.Environment)] }}
+      AWS_ACCOUNT_ID: ${{ secrets[format('AWS_ACCOUNT_ID_CUMULUS_{0}', inputs.Environment)] }}
+      AWS_DEFAULT_REGION: us-west-2
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/download-artifact@v6
+        with:
+          name: sigevent-wheel
+          path: ./dist
+      - name: Set environment variable
+        run: |
+          if [[ "${{ github.event.inputs.Environment }}" != "" ]]; then
+            ENVIRONMENT="${{ github.event.inputs.Environment }}"
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            ENVIRONMENT="ops"
+          elif [[ "${GITHUB_REF_NAME}" == "develop" ]]; then
+            ENVIRONMENT="sit"
+          elif [[ "${GITHUB_REF_NAME}" =~ ^release/* ]]; then
+            ENVIRONMENT="uat"
+          else
+            echo "Could not determine environment. Please provide a valid environment."
+            exit 1
+          fi
+
+          echo "ENVIRONMENT=$(echo "${ENVIRONMENT}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      - name: Run deploy.sh with auto-approve
+        working-directory: sigevent/terraform
+        run: |
+          ENVIRONMENT=$(echo "${{ github.event.inputs.Environment }}" | tr '[:upper:]' '[:lower:]')
+          ./bin/deploy.sh "$ENVIRONMENT" --auto-approve
