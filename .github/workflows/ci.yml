@@ -10,6 +10,9 @@ on:
       - main
       - develop
       - release/**
+defaults:
+  run:
+    shell: bash
 
 jobs:
   linting:

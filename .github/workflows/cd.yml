@@ -14,6 +14,9 @@ on:
           - SIT
           - UAT
           - OPS
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
