@@ -12,4 +12,5 @@ runs:
         python3 -m pipx install poetry
         echo "$HOME/.local/bin" >> $GITHUB_PATH
     - name: Verify Poetry installation
+      shell: bash
       run: poetry --version
