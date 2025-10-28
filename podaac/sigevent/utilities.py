@@ -1,7 +1,8 @@
 """Shared utilities for lambdas"""
 import logging
-from os import environ, getenv
+from os import getenv
 import boto3
+
 
 class Utilities:
     '''
@@ -82,5 +83,6 @@ class Utilities:
             if self.get_param('log_level') is not None else logging.INFO
         logger.setLevel(log_level)
         return logger
+
 
 utils = Utilities()
