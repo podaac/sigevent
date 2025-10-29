@@ -73,7 +73,7 @@ def test_lookup_notification_count_expired(mock_date):
             'message_hash': 'test-hash',
             'date': '1970-01-02',
             'count': 0,
-            'expiration': 201600,
+            'expiration': 172800,
         }
     )
 
@@ -91,7 +91,7 @@ def test_lookup_notification_count_nonexistent(mock_date):
             'message_hash': 'test-hash',
             'date': '1970-01-01',
             'count': 0,
-            'expiration': 115200,
+            'expiration': 86400,
         }
     )
 
