@@ -39,7 +39,7 @@ def event_message():
 
 @patch('podaac.sigevent.event_handler.datetime')
 def test_lookup_notification_count_existing(mock_date):
-    mock_date.now.return_value = datetime(1970, 1, 1)
+    mock_date.now.return_value = datetime(1970, 1, 1, tzinfo=timezone.utc)
     event_handler.notification_table.get_item.return_value = {
         'Item': {
             'date': '1970-01-01',
@@ -55,7 +55,7 @@ def test_lookup_notification_count_existing(mock_date):
 
 @patch('podaac.sigevent.event_handler.datetime')
 def test_lookup_notification_count_expired(mock_date):
-    mock_date.now.return_value = datetime(1970, 1, 2)
+    mock_date.now.return_value = datetime(1970, 1, 2, tzinfo=timezone.utc)
     event_handler.notification_table.get_item.return_value = {
         'Item': {
             'date': '1970-01-01',
@@ -80,7 +80,7 @@ def test_lookup_notification_count_expired(mock_date):
 
 @patch('podaac.sigevent.event_handler.datetime')
 def test_lookup_notification_count_nonexistent(mock_date):
-    mock_date.now.return_value = datetime(1970, 1, 1)
+    mock_date.now.return_value = datetime(1970, 1, 1, tzinfo=timezone.utc)
     event_handler.notification_table.get_item.return_value = {}
 
     count = event_handler.lookup_notification_count('test-hash')
