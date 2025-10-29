@@ -65,4 +65,4 @@ jobs:
       - name: Build package
         uses: ./.github/actions/build
         with:
-          artifact-name: sigevent-wheel
+          artifact-name: sigevent-lambda

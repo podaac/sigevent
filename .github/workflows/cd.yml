@@ -31,7 +31,7 @@ jobs:
       - name: Build package
         uses: ./.github/actions/build
         with:
-          artifact-name: sigevent-wheel
+          artifact-name: sigevent-lambda
 
   deploy:
     name: Deploy Infrastructure
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions/download-artifact@v6
         with:
-          name: sigevent-wheel
+          name: sigevent-lambda
           path: ./dist
       - name: Set environment variable
         run: |
