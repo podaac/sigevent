@@ -10,7 +10,7 @@ runs:
       shell: bash
       run: |
         apt update
-        apt install zip
+        apt install zip -y
         poetry self add poetry-plugin-bundle
     - name: Build package
       shell: bash
