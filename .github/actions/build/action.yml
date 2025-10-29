@@ -11,9 +11,9 @@ runs:
       run: poetry build
     - name: Build package
       shell: bash
-      run: poetry build
+      run: ./build.sh
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v5
       with:
         name: ${{ inputs.artifact-name }}
-        path: dist/*.whl
+        path: dist/*.zip

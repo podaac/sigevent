@@ -68,6 +68,4 @@ jobs:
           echo "ENVIRONMENT=$(echo "${ENVIRONMENT}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
       - name: Run deploy.sh with auto-approve
         working-directory: sigevent/terraform
-        run: |
-          ENVIRONMENT=$(echo "${{ github.event.inputs.Environment }}" | tr '[:upper:]' '[:lower:]')
-          ./bin/deploy.sh "$ENVIRONMENT" --auto-approve
+        run: ./bin/deploy.sh "$ENVIRONMENT" --auto-approve
