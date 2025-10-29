@@ -9,6 +9,7 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
+        apt update
         apt install zip
         poetry self add poetry-plugin-bundle
     - name: Build package
