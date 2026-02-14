@@ -84,6 +84,7 @@ def invoke(event, _):
 
     logger.debug('Finished sending emails')
 
+
 def search_error_logs():
     '''
     Generates a list of dictionaries containing an analyzed version of log
@@ -116,6 +117,7 @@ def search_error_logs():
             next_token = response['nextToken']
         else:
             return logs
+
 
 def analyze_messages(messages: list[EventMessage]) -> dict:
     '''
@@ -168,6 +170,7 @@ def analyze_messages(messages: list[EventMessage]) -> dict:
 
     return analyses
 
+
 def generate_csv_report(analyses: list[dict]) -> TemporaryFile:
     """
     Generate an CSV report from an analysis dict
@@ -206,6 +209,7 @@ def generate_csv_report(analyses: list[dict]) -> TemporaryFile:
     csv_file.seek(0)
     return csv_file
 
+
 def generate_html_report(analyses: list[dict]) -> str:
     """
     Generates an HTML report using a predefined template and the analysis
@@ -213,7 +217,8 @@ def generate_html_report(analyses: list[dict]) -> str:
     """
 
     template = jinja_env.get_template('summary.html')
-    num_items = MAX_TABLE_SIZE if len(analyses) > MAX_TABLE_SIZE else len(analyses)
+    num_items = MAX_TABLE_SIZE if len(analyses) > MAX_TABLE_SIZE \
+        else len(analyses)
 
     return template.render(
         analyses=analyses,

@@ -3,12 +3,19 @@ set -eo pipefail
 
 if [ ! $# -eq 1 ]
 then
-    echo "usage: $(caller | cut -d' ' -f2) venue"
+    echo "$(caller | cut -d' ' -f2) venue"
     exit 1
 fi
 
 VENUE=$1
-source "$(dirname $BASH_SOURCE)/../environments/$VENUE.env"
+shift
+
+cd "$(dirname $BASH_SOURCE)/../"
+source "environments/$VENUE.env"
+
+if [ -f "environments/$VENUE.secrets.env" ]; then
+  source "environments/$VENUE.secrets.env"
+fi
 
 export TF_IN_AUTOMATION=true  # https://www.terraform.io/cli/config/environment-variables#tf_in_automation
 export TF_INPUT=false  # https://www.terraform.io/cli/config/environment-variables#tf_input
