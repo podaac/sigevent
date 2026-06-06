@@ -1,0 +1,68 @@
+name: CI
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - release/**
+  pull_request:
+    branches:
+      - main
+      - develop
+      - release/**
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linting:
+    name: Linting
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-slim-trixie
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup poetry
+        uses: ./.github/actions/install-poetry
+      - name: Install dependencies
+        run: |
+          poetry install
+      - name: Run linter
+        run: |
+          poetry run flake8 podaac/sigevent
+          poetry run pylint podaac/sigevent
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-slim-trixie
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup poetry
+        uses: ./.github/actions/install-poetry
+      - name: Install dependencies
+        run: poetry install
+      - name: Run tests
+        run: |
+          poetry run pytest --cov=podaac/sigevent --cov-report=xml tests/
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-slim-trixie
+    needs: [linting, test]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup poetry
+        uses: ./.github/actions/install-poetry
+      - name: Build package
+        uses: ./.github/actions/build
+        with:
+          artifact-name: sigevent-lambda

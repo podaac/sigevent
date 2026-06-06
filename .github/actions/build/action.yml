@@ -1,0 +1,22 @@
+name: Build Sigevent
+description: Builds a Sigevent wheel file
+inputs:
+  artifact-name:
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        apt update
+        apt install zip -y
+        poetry self add poetry-plugin-bundle
+    - name: Build package
+      shell: bash
+      run: ./build.sh
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: dist/*.zip

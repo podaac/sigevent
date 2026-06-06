@@ -18,7 +18,7 @@ poetry bundle venv --clear --without=dev --python=$(which python3.11) build
 
 # Work around for getting pydantic linux distributions on macOS
 # https://docs.pydantic.dev/latest/integrations/aws_lambda/#installing-python-libraries-for-aws-lambda-functions
-poetry run -C build \
+poetry run -C build -P . \
   pip3 install \
   --platform manylinux2014_x86_64 \
   --target=$ROOT_PATH/build/lib/python3.11/site-packages \

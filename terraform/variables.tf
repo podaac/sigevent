@@ -26,6 +26,7 @@ variable "ses_region" {
 
 variable "notification_emails" {
   type = list(string)
+  default = null
 }
 
 variable "authorized_accounts" {

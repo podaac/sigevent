@@ -18,7 +18,7 @@ NOTIFICATION_TABLE_NAME = utils.get_param('notification_table_name')
 NOTIFICATION_TEMPLATE = resources.files(__package__).joinpath(
     'resources', 'notification.html').read_text('utf-8')
 STAGE = utils.get_param('stage')
-MUTED_MODE = True if utils.get_param('muted_mode') == 'true' else False
+MUTED_MODE = utils.get_param('muted_mode') == 'true'
 MAX_DAILY_WARNS = int(utils.get_param('max_daily_warns'))
 
 SES_REGION = utils.get_param('ses_region')
@@ -60,7 +60,9 @@ def invoke(event: dict, _):
                     'Message does not include timestamp; using SNS timestamp'
                 )
                 message = message.model_copy(update={
-                    'timestamp': datetime.fromisoformat(sns_record['Timestamp'])
+                    'timestamp': datetime.fromisoformat(
+                        sns_record['Timestamp']
+                    )
                 })
 
             process_event_message(message)
@@ -75,13 +77,13 @@ def process_event_message(message: EventMessage):
     Process a singular EventMessage performing the storage of the message in
     the CloudWatch log group and sending out a notification if the required
     conditions are met.
-    
+
     On a WARN, the notification count is limited by MAX_DAILY_NOTIFICATIONS.
     This count limits the number of notifications sent out per collection,
     per day.
-    
+
     On an ERROR, notifications are sent no matter what.
-    
+
     For all else, notifications are just logged in CloudWatch without a
     notification.
     """
@@ -94,7 +96,7 @@ def process_event_message(message: EventMessage):
                 logStreamName=message.collection_name
             )
         except ClientError as ex:
-            if ex.response['Error']['Code'] == 'ResourceAlreadyExistsException':
+            if ex.response['Error']['Code'] == 'ResourceAlreadyExistsException':  # noqa: E501
                 logger.debug('Log stream already exists; no-op')
             else:
                 raise ex
@@ -120,7 +122,7 @@ def process_event_message(message: EventMessage):
     # Filtered send logic
     if message.event_level is EventLevel.WARN:
         metadata_hash = hashlib.sha1(
-            bytes(message.event_level.value, 'utf-8') + \
+            bytes(message.event_level.value, 'utf-8') +
             bytes(message.collection_name, 'utf-8'),
             usedforsecurity=False
         ).hexdigest()
@@ -135,16 +137,17 @@ def process_event_message(message: EventMessage):
     else:
         logger.debug('Message not sent')
 
+
 def send_notification(message: EventMessage):
     """
     Sends notifications to interested parties via SES using a predefined
     email template
     """
     today = date.today()
-    
+
     for address in NOTIFICATION_EMAILS:
         logger.debug('Sending email to: %s', address)
-        
+
         ses.send_email(
             ConfigurationSetName=SES_CONFIG_SET_NAME,
             FromEmailAddressIdentityArn=SES_SENDER_ARN,
@@ -153,21 +156,23 @@ def send_notification(message: EventMessage):
             Content={
                 'Simple': {
                     'Subject': {
-                        'Data': f'[{message.category}] {today} {message.collection_name}',
+                        'Data': f'[{message.category}] {today} {message.collection_name}',  # noqa: E501 # pylint: disable=line-too-long
                         'Charset': 'UTF-8'
                     },
                     'Body': {
                         'Html': {
                             'Data': NOTIFICATION_TEMPLATE.format(
-                                raw_message=html.escape(message.model_dump_json())),
+                                raw_message=html.escape(
+                                    message.model_dump_json())),
                             'Charset': 'UTF-8'
                         }
                     }
                 }
             }
         )
-        
+
     logger.debug('Sending finished')
+
 
 def lookup_notification_count(message_hash: str):
     """
@@ -182,7 +187,7 @@ def lookup_notification_count(message_hash: str):
     now = datetime.now(timezone.utc)
     today_date = now.replace(hour=0, minute=0, second=0, microsecond=0).date()
     tomorrow = (
-        now.replace(hour=0, minute=0, second=0, microsecond=0) + \
+        now.replace(hour=0, minute=0, second=0, microsecond=0) +
         timedelta(days=1)
     )
 
@@ -208,6 +213,7 @@ def lookup_notification_count(message_hash: str):
         return 0
 
     return item['count']
+
 
 def increment_notification_count(message_hash: str):
     """

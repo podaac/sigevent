@@ -1,0 +1,16 @@
+
+name: Install Poetry
+description: Installs Poetry using pipx for automatic venv management
+runs:
+  using: "composite"
+  steps:
+    - name: Install Poetry via pipx
+      shell: bash
+      run: |
+        python3 -m pip install --user pipx
+        python3 -m pipx ensurepath
+        python3 -m pipx install poetry
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+    - name: Verify Poetry installation
+      shell: bash
+      run: poetry --version
