@@ -12,6 +12,44 @@ from podaac.sigevent.message import EventMessage, EventLevel
 from podaac.sigevent.utilities import utils
 
 
+logger = utils.get_logger(__name__)
+
+# Applied when the corresponding SSM parameter is absent. The legacy venues run
+# deployments that predate these settings and will not carry them until they are
+# redeployed -- which is deliberately avoided -- so every tunable must survive a
+# missing parameter.
+DEFAULT_MAX_DAILY_WARNS = 3
+
+
+def get_int_param(name, default):
+    """
+    Reads an integer parameter, falling back to a default when it is absent or
+    unparseable.
+
+    utils.get_param() returns None for a parameter that was never deployed, and
+    int(None) raises. At module scope that kills the lambda at import, for every
+    message, on every invocation. A venue running an older deployment must
+    degrade to a sane default rather than stop processing entirely.
+    """
+    raw = utils.get_param(name)
+
+    if raw is None:
+        logger.warning(
+            'Parameter %s is not deployed in this venue; using default %s',
+            name, default
+        )
+        return default
+
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.error(
+            'Parameter %s is not an integer (got %r); using default %s',
+            name, raw, default
+        )
+        return default
+
+
 CLOUDWATCH_LOG_GROUP = utils.get_param('log_group')
 NOTIFICATION_EMAILS = json.loads(utils.get_param('notification_emails'))
 NOTIFICATION_TABLE_NAME = utils.get_param('notification_table_name')
@@ -19,7 +57,7 @@ NOTIFICATION_TEMPLATE = resources.files(__package__).joinpath(
     'resources', 'notification.html').read_text('utf-8')
 STAGE = utils.get_param('stage')
 MUTED_MODE = True if utils.get_param('muted_mode') == 'true' else False
-MAX_DAILY_WARNS = int(utils.get_param('max_daily_warns'))
+MAX_DAILY_WARNS = get_int_param('max_daily_warns', DEFAULT_MAX_DAILY_WARNS)
 
 SES_REGION = utils.get_param('ses_region')
 SES_SENDER_ARN = utils.get_param('ses_sender_arn')
@@ -29,7 +67,6 @@ cloudwatchlogs = boto3.client('logs')
 ses = boto3.client('sesv2', region_name=SES_REGION)
 
 notification_table = boto3.resource('dynamodb').Table(NOTIFICATION_TABLE_NAME)
-logger = utils.get_logger(__name__)
 existing_log_streams = set()
 
 
@@ -138,81 +175,120 @@ def process_event_message(message: EventMessage):
 def send_notification(message: EventMessage):
     """
     Sends notifications to interested parties via SES using a predefined
-    email template
+    email template.
+
+    Each recipient is attempted independently. One failed address will not abort
+    the invocation: SQS would redeliver the message and every address that had
+    already succeeded would be sent to again, up to maxReceiveCount times.
+
+    Returns the number of recipients successfully sent to. Raises if every
+    attempt failed (revoked SES, permission, a bad identity ARN, etc)
+    still dead-letters and stays visible
     """
     today = date.today()
-    
+
+    if not NOTIFICATION_EMAILS:
+        logger.error('No notification recipients are configured; nothing sent')
+        return 0
+
+    sent = 0
+    last_error = None
+
     for address in NOTIFICATION_EMAILS:
         logger.debug('Sending email to: %s', address)
-        
-        ses.send_email(
-            ConfigurationSetName=SES_CONFIG_SET_NAME,
-            FromEmailAddressIdentityArn=SES_SENDER_ARN,
-            FromEmailAddress=f'{STAGE} Sigevent <noreply@nasa.gov>',
-            Destination={'ToAddresses': [address]},
-            Content={
-                'Simple': {
-                    'Subject': {
-                        'Data': f'[{message.category}] {today} {message.collection_name}',
-                        'Charset': 'UTF-8'
-                    },
-                    'Body': {
-                        'Html': {
-                            'Data': NOTIFICATION_TEMPLATE.format(
-                                raw_message=html.escape(message.model_dump_json())),
+
+        try:
+            ses.send_email(
+                ConfigurationSetName=SES_CONFIG_SET_NAME,
+                FromEmailAddressIdentityArn=SES_SENDER_ARN,
+                FromEmailAddress=f'{STAGE} Sigevent <noreply@nasa.gov>',
+                Destination={'ToAddresses': [address]},
+                Content={
+                    'Simple': {
+                        'Subject': {
+                            'Data': f'[{message.category}] {today} {message.collection_name}',
                             'Charset': 'UTF-8'
+                        },
+                        'Body': {
+                            'Html': {
+                                'Data': NOTIFICATION_TEMPLATE.format(
+                                    raw_message=html.escape(message.model_dump_json())),
+                                'Charset': 'UTF-8'
+                            }
                         }
                     }
                 }
-            }
+            )
+            sent += 1
+        except Exception as ex:
+            last_error = ex
+            logger.error('Failed to send notification to %s: %s', address, ex)
+
+    if sent == 0 and last_error is not None:
+        logger.error(
+            'All %d notification sends failed; failing the invocation so the '
+            'message is retried and dead-letters rather than being lost',
+            len(NOTIFICATION_EMAILS)
         )
-        
-    logger.debug('Sending finished')
+        raise last_error
+
+    logger.debug(
+        'Sending finished: %d of %d succeeded', sent, len(NOTIFICATION_EMAILS)
+    )
+    return sent
 
 def lookup_notification_count(message_hash: str):
     """
     Looks up the number of notifications already sent based on the hashed
     metadata attributes generated from an EventMessage. Will create a
-    DynamoDB table entry if one does not exist with an event_count of 0
+    DynamoDB table entry if one does not exist with a count of 0.
     """
-    response = notification_table.get_item(Key={
-        'message_hash': message_hash
-    })
-
     now = datetime.now(timezone.utc)
-    today_date = now.replace(hour=0, minute=0, second=0, microsecond=0).date()
-    tomorrow = (
-        now.replace(hour=0, minute=0, second=0, microsecond=0) + \
-        timedelta(days=1)
-    )
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_date = midnight.date()
+    tomorrow = midnight + timedelta(days=1)
 
-    logger.debug("Notification lookup response: %s", response)
-    if 'Item' not in response:
-        notification_table.put_item(Item={
-            'message_hash': message_hash,
-            'date': today_date.isoformat(),
-            'count': 0,
-            'expiration': int(tomorrow.timestamp())
-        })
-        return 0
+    try:
+        response = notification_table.update_item(
+            Key={'message_hash': message_hash},
+            UpdateExpression=(
+                'SET #date = :today, #count = :zero, #expiration = :expiration'
+            ),
+            # Rolls the day over only when the item is absent, or present and
+            # carrying a date other than today.
+            ConditionExpression=(
+                'attribute_not_exists(message_hash) OR #date <> :today'
+            ),
+            # date, count and expiration are all DynamoDB reserved words.
+            ExpressionAttributeNames={
+                '#date': 'date',
+                '#count': 'count',
+                '#expiration': 'expiration'
+            },
+            ExpressionAttributeValues={
+                ':today': today_date.isoformat(),
+                ':zero': 0,
+                ':expiration': int(tomorrow.timestamp())
+            },
+            ReturnValues='ALL_NEW'
+        )
 
-    item = response['Item']
+        logger.debug('Notification count rolled over: %s', response)
+        return response['Attributes']['count']
+    except ClientError as ex:
+        if ex.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
 
-    if date.fromisoformat(item['date']) != today_date:
-        notification_table.put_item(Item={
-            'message_hash': message_hash,
-            'date': today_date.isoformat(),
-            'count': 0,
-            'expiration': int(tomorrow.timestamp())
-        })
-        return 0
+    response = notification_table.get_item(Key={'message_hash': message_hash})
+    logger.debug('Notification lookup response: %s', response)
 
-    return item['count']
+    # Defensive: the TTL could in principle delete the item between the failed
+    # condition and this read.
+    return response.get('Item', {}).get('count', 0)
 
 def increment_notification_count(message_hash: str):
     """
-    Atomically increments notification count of the message_hash provided.
-    The table element should already exist otherwise this will fail.
+    Increments notification count of the message_hash provided.
     """
     notification_table.update_item(
         Key={'message_hash': message_hash},
