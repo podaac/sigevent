@@ -15,7 +15,7 @@ class Utilities:
 
         Utilities._instance = self
         self._env = getenv('SIGEVENT_ENV', 'prod')
-        self._service_name = getenv('SIGEVENT_SERVICE_NAME', 'sigevent')
+        self._service_name = 'sigevent'
         self._ssm_path = f'/service/{self._service_name}/'
 
         if self._env == 'prod':
@@ -69,8 +69,7 @@ class Utilities:
         if self._env == 'prod':
             return self._ssm_parameters.get(name)
 
-        prefix = self._service_name.upper().replace('-', '_')
-        return getenv(f'{prefix}_{name}')
+        return getenv(f'{self._service_name.upper()}_{name}')
 
     def get_logger(self, name):
         '''
