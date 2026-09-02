@@ -416,7 +416,10 @@ def _increment_window(message_hash, now):
             Key={'message_hash': message_hash},
             UpdateExpression='ADD #window_count :one',
             ConditionExpression='#window_ends_at > :now',
-            ExpressionAttributeNames=STORM_NAMES,
+            ExpressionAttributeNames={
+                '#window_count': 'window_count',
+                '#window_ends_at': 'window_ends_at'
+            },
             ExpressionAttributeValues={':one': 1, ':now': now},
             ReturnValues='ALL_NEW'
         )
