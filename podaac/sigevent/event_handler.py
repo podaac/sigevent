@@ -369,6 +369,95 @@ def _describe_window(seconds):
     hours = minutes // 60
     return '1 hour' if hours == 1 else f'{hours} hours'
 
+# Window are counters in storm detection.
+# window_ends_at  epoch seconds; the window is live while now < this
+# window_count    events counted in the current window
+# window_seconds  current window length, doubled on each roll while storming
+# storm_active    individual notifications are currently suppressed
+#
+# window_ends_at is stored absolute rather than as start, length becuse a
+# DynamoDB condition expression cannot do arithmetic on attributes
+
+STORM_NAMES = {
+    '#window_ends_at': 'window_ends_at',
+    '#window_count': 'window_count',
+    '#window_seconds': 'window_seconds',
+    '#storm_active': 'storm_active'
+}
+
+
+def _next_window_seconds(current):
+    """
+    Doubles the window by creating a cap. 
+    This prevents a storm running unattended overnight, which would 
+    otherwise produce a summary every few minutes for hours.
+    """
+    return min(current * 2, STORM_MAX_WINDOW_SECONDS)
+
+
+def _no_storm():
+    return {
+        'suppress_individual': False,
+        'summary_count': None,
+        'all_clear_count': None
+    }
+
+
+def _increment_window(message_hash, now):
+    """
+    Counts this event into the live window and returns the whole updated item
+    None when there is no live window to count it into.
+
+    ALL_NEW rather than UPDATED_NEW so the storm flag comes back in the same
+    round trip; at 500 events a minute an extra read per event is not free.
+    """
+    try:
+        response = notification_table.update_item(
+            Key={'message_hash': message_hash},
+            UpdateExpression='ADD #window_count :one',
+            ConditionExpression='#window_ends_at > :now',
+            ExpressionAttributeNames=STORM_NAMES,
+            ExpressionAttributeValues={':one': 1, ':now': now},
+            ReturnValues='ALL_NEW'
+        )
+        return response['Attributes']
+    except ClientError as ex:
+        if ex.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+
+    return None
+
+
+def _decide_within_window(message_hash, item):
+    """
+    Decides what this event should be assigned as based on the window.
+    """
+    count = int(item.get('window_count', 0))
+
+    if bool(item.get('storm_active', False)):
+        # Already storming. Summaries are emitted at window, not here.
+        return {
+            'suppress_individual': True,
+            'summary_count': None,
+            'all_clear_count': None
+        }
+
+    if count == STORM_THRESHOLD + 1:
+        _set_storm_active(message_hash)
+        return {
+            'suppress_individual': True,
+            'summary_count': count,
+            'all_clear_count': None
+        }
+
+    if count > STORM_THRESHOLD:
+        return {
+            'suppress_individual': True,
+            'summary_count': None,
+            'all_clear_count': None
+        }
+
+    return _no_storm()
 
 
 def lookup_notification_count(message_hash: str):
