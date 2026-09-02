@@ -459,6 +459,121 @@ def _decide_within_window(message_hash, item):
 
     return _no_storm()
 
+def _set_storm_active(message_hash):
+    """The invocation that crossed the threshold calls this,
+    and an SQS redelivery repeating it is harmless."""
+    notification_table.update_item(
+        Key={'message_hash': message_hash},
+        UpdateExpression='SET #storm_active = :true',
+        ExpressionAttributeNames={'#storm_active': 'storm_active'},
+        ExpressionAttributeValues={':true': True}
+    )
+
+
+def _roll_storm_window(message_hash, now):
+    """
+    Opens a new storm window, and reports on the one that just closed.
+
+    Returns None when another invocation won the roll, in which case the caller
+    counts this event into the window that invocation opened.
+    """
+    response = notification_table.get_item(Key={'message_hash': message_hash})
+    item = response.get('Item', {})
+
+    previous_count = int(item.get('window_count', 0))
+    previous_seconds = int(item.get('window_seconds', STORM_WINDOW_SECONDS))
+    was_active = bool(item.get('storm_active', False))
+    still_storming = previous_count > STORM_THRESHOLD
+
+    if was_active and still_storming:
+        window_seconds = _next_window_seconds(previous_seconds)
+    else:
+        window_seconds = STORM_WINDOW_SECONDS
+
+    try:
+        notification_table.update_item(
+            Key={'message_hash': message_hash},
+            UpdateExpression=(
+                'SET #window_ends_at = :ends, #window_count = :one, '
+                '#window_seconds = :secs, #storm_active = :active'
+            ),
+            ConditionExpression=(
+                'attribute_not_exists(#window_ends_at) OR #window_ends_at <= :now'
+            ),
+            ExpressionAttributeNames=STORM_NAMES,
+            ExpressionAttributeValues={
+                ':ends': now + window_seconds,
+                ':one': 1,
+                ':secs': window_seconds,
+                ':active': was_active and still_storming,
+                ':now': now
+            }
+        )
+    except ClientError as ex:
+        if ex.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+        return None
+
+    if was_active and still_storming:
+        return {
+            'suppress_individual': True,
+            'summary_count': previous_count,
+            'all_clear_count': None
+        }
+
+    if was_active:
+        return {
+            'suppress_individual': False,
+            'summary_count': None,
+            'all_clear_count': previous_count
+        }
+
+    return _no_storm()
+
+
+def evaluate_storm(message_hash):
+    """
+    Records this event and decides whether the collection is storming.
+    """
+    now = int(datetime.now(timezone.utc).timestamp())
+
+    item = _increment_window(message_hash, now)
+    if item is not None:
+        return _decide_within_window(message_hash, item)
+
+    decision = _roll_storm_window(message_hash, now)
+    if decision is not None:
+        return decision
+
+    item = _increment_window(message_hash, now)
+    if item is not None:
+        return _decide_within_window(message_hash, item)
+
+    return _no_storm()
+
+
+def claim_cap_notice(message_hash, today):
+    """
+    Announce that the daily cap is reached, once per day per
+    collection. Without this, the cap turns a flood into silence.
+    """
+    try:
+        notification_table.update_item(
+            Key={'message_hash': message_hash},
+            UpdateExpression='SET #cap_notice_date = :today',
+            ConditionExpression=(
+                'attribute_not_exists(#cap_notice_date) OR '
+                '#cap_notice_date <> :today'
+            ),
+            ExpressionAttributeNames={'#cap_notice_date': 'cap_notice_date'},
+            ExpressionAttributeValues={':today': today}
+        )
+        return True
+    except ClientError as ex:
+        if ex.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+
+    return False
 
 def lookup_notification_count(message_hash: str):
     """
