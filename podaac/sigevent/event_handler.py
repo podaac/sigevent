@@ -19,6 +19,10 @@ logger = utils.get_logger(__name__)
 # redeployed -- which is deliberately avoided -- so every tunable must survive a
 # missing parameter.
 DEFAULT_MAX_DAILY_WARNS = 3
+DEFAULT_MAX_DAILY_ERRORS = 20
+DEFAULT_STORM_THRESHOLD = 10
+DEFAULT_STORM_WINDOW_MINUTES = 5
+DEFAULT_STORM_SUMMARY_MAX_INTERVAL_MINUTES = 60
 
 
 def get_int_param(name, default):
@@ -55,9 +59,21 @@ NOTIFICATION_EMAILS = json.loads(utils.get_param('notification_emails'))
 NOTIFICATION_TABLE_NAME = utils.get_param('notification_table_name')
 NOTIFICATION_TEMPLATE = resources.files(__package__).joinpath(
     'resources', 'notification.html').read_text('utf-8')
+STORM_TEMPLATE = resources.files(__package__).joinpath(
+    'resources', 'storm_summary.html').read_text('utf-8')
 STAGE = utils.get_param('stage')
 MUTED_MODE = True if utils.get_param('muted_mode') == 'true' else False
 MAX_DAILY_WARNS = get_int_param('max_daily_warns', DEFAULT_MAX_DAILY_WARNS)
+MAX_DAILY_ERRORS = get_int_param('max_daily_errors', DEFAULT_MAX_DAILY_ERRORS)
+
+STORM_THRESHOLD = get_int_param('storm_threshold', DEFAULT_STORM_THRESHOLD)
+STORM_WINDOW_SECONDS = 60 * get_int_param(
+    'storm_window_minutes', DEFAULT_STORM_WINDOW_MINUTES
+)
+STORM_MAX_WINDOW_SECONDS = 60 * get_int_param(
+    'storm_summary_max_interval_minutes',
+    DEFAULT_STORM_SUMMARY_MAX_INTERVAL_MINUTES
+)
 
 SES_REGION = utils.get_param('ses_region')
 SES_SENDER_ARN = utils.get_param('ses_sender_arn')
@@ -156,21 +172,71 @@ def process_event_message(message: EventMessage):
 
     # Filtered send logic
     if message.event_level is EventLevel.WARN:
-        metadata_hash = hashlib.sha1(
-            bytes(message.event_level.value, 'utf-8') + \
-            bytes(message.collection_name, 'utf-8'),
-            usedforsecurity=False
-        ).hexdigest()
+        metadata_hash = _metadata_hash(message)
 
         notification_count = lookup_notification_count(metadata_hash)
         if notification_count < MAX_DAILY_WARNS:
             send_notification(message)
             increment_notification_count(metadata_hash)
     elif message.event_level is EventLevel.ERROR:
-        # Always send out errors
-        send_notification(message)
+        process_error_message(message)
     else:
         logger.debug('Message not sent')
+
+
+def _metadata_hash(message: EventMessage):
+    """
+    The counter key: one bucket per level, per collection.
+    """
+    return hashlib.sha1(
+        bytes(message.event_level.value, 'utf-8') + \
+        bytes(message.collection_name, 'utf-8'),
+        usedforsecurity=False
+    ).hexdigest()
+
+
+def process_error_message(message: EventMessage):
+    """
+    Decides what an ERROR warrants.
+
+    Storm detection is checked s.t. durng a burst a single summary carrying a
+    running count is worth more than twenty individual emails
+    followed by silence. Only when a collection is not storming does the daily
+    cap apply.
+
+    Storm summaries and the cap notice deliberately do NOT count against
+    max_daily_errors. 
+
+    Storm detection is not applied to WARN: max_daily_warns already bounds it at
+    3 per collection per day, so a WARN storm cannot flood anyone.
+    """
+    metadata_hash = _metadata_hash(message)
+    storm = evaluate_storm(metadata_hash)
+
+    if storm['all_clear_count'] is not None:
+        send_storm_notification(message, 'cleared', storm['all_clear_count'])
+
+    if storm['summary_count'] is not None:
+        send_storm_notification(message, 'summary', storm['summary_count'])
+
+    if storm['suppress_individual']:
+        logger.info(
+            'Collection %s is storming; event logged but not emailed '
+            'individually', message.collection_name
+        )
+        return
+
+    notification_count = lookup_notification_count(metadata_hash)
+
+    if notification_count < MAX_DAILY_ERRORS:
+        send_notification(message)
+        increment_notification_count(metadata_hash)
+    elif claim_cap_notice(metadata_hash, date.today().isoformat()):
+        logger.info(
+            'Daily error notification cap reached for %s',
+            message.collection_name
+        )
+        send_storm_notification(message, 'cap', notification_count)
 
 def send_notification(message: EventMessage):
     """
@@ -187,6 +253,18 @@ def send_notification(message: EventMessage):
     """
     today = date.today()
 
+    return send_email_to_recipients(
+        f'[{message.category}] {today} {message.collection_name}',
+        NOTIFICATION_TEMPLATE.format(
+            raw_message=html.escape(message.model_dump_json()))
+    )
+
+
+def send_email_to_recipients(subject, html_body):
+    """
+    Issues one SES send per recipient, allowing individual failures. Shared by
+    per-event notifications and by the storm and cap notices.
+    """
     if not NOTIFICATION_EMAILS:
         logger.error('No notification recipients are configured; nothing sent')
         return 0
@@ -205,14 +283,10 @@ def send_notification(message: EventMessage):
                 Destination={'ToAddresses': [address]},
                 Content={
                     'Simple': {
-                        'Subject': {
-                            'Data': f'[{message.category}] {today} {message.collection_name}',
-                            'Charset': 'UTF-8'
-                        },
+                        'Subject': {'Data': subject, 'Charset': 'UTF-8'},
                         'Body': {
                             'Html': {
-                                'Data': NOTIFICATION_TEMPLATE.format(
-                                    raw_message=html.escape(message.model_dump_json())),
+                                'Data': html_body,
                                 'Charset': 'UTF-8'
                             }
                         }
@@ -237,6 +311,66 @@ def send_notification(message: EventMessage):
     )
     return sent
 
+
+STORM_MESSAGES = {
+    'summary': (
+        'Error storm',
+        '{count} errors from {collection} in the last {window}.',
+        'Individual notifications are paused for this collection while the '
+        'burst continues. Every event is still recorded in CloudWatch.'
+    ),
+    'cleared': (
+        'Error storm cleared',
+        '{collection} has stopped producing errors at storm rate.',
+        'The last window closed with {count} events. Individual notifications '
+        'have resumed.'
+    ),
+    'cap': (
+        'Daily error limit reached',
+        '{collection} has reached its daily limit of {count} error '
+        'notifications.',
+        'Further errors today are recorded in CloudWatch but not emailed. '
+        'The limit resets at midnight UTC.'
+    )
+}
+
+
+def send_storm_notification(message: EventMessage, kind, count):
+    """
+    Sends either a storm summary, an all-clear, or a daily-cap notice.
+    """
+    title, headline, detail = STORM_MESSAGES[kind]
+    window = _describe_window(STORM_WINDOW_SECONDS)
+
+    fields = {
+        'count': count,
+        'collection': message.collection_name,
+        'window': window
+    }
+
+    subject = f'[{title.upper()}] {date.today()} {message.collection_name}'
+    body = STORM_TEMPLATE.format(
+        title=html.escape(title),
+        headline=html.escape(headline.format(**fields)),
+        detail=html.escape(detail.format(**fields)),
+        collection_name=html.escape(message.collection_name)
+    )
+
+    return send_email_to_recipients(subject, body)
+
+
+def _describe_window(seconds):
+    """Renders a window length the way an operator would say it."""
+    minutes = seconds // 60
+
+    if minutes < 60:
+        return f'{minutes} minutes'
+
+    hours = minutes // 60
+    return '1 hour' if hours == 1 else f'{hours} hours'
+
+
+
 def lookup_notification_count(message_hash: str):
     """
     Looks up the number of notifications already sent based on the hashed
@@ -257,7 +391,7 @@ def lookup_notification_count(message_hash: str):
             # Rolls the day over only when the item is absent, or present and
             # carrying a date other than today.
             ConditionExpression=(
-                'attribute_not_exists(message_hash) OR #date <> :today'
+                'attribute_not_exists(#date) OR #date <> :today'
             ),
             # date, count and expiration are all DynamoDB reserved words.
             ExpressionAttributeNames={
