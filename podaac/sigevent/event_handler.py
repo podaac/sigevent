@@ -128,15 +128,13 @@ def process_event_message(message: EventMessage):
     Process a singular EventMessage performing the storage of the message in
     the CloudWatch log group and sending out a notification if the required
     conditions are met.
-    
-    On a WARN, the notification count is limited by MAX_DAILY_NOTIFICATIONS.
-    This count limits the number of notifications sent out per collection,
-    per day.
-    
-    On an ERROR, notifications are sent no matter what.
-    
-    For all else, notifications are just logged in CloudWatch without a
-    notification.
+    WARN = delivery is bounded by max_daily_warns, per collection per day.
+    ERROR = storm detection decides first: during a burst, individual
+    notifications are suppressed in favor of a single summary.  Outside a storm,
+    delivery is bounded by max_daily_errors, with one notice when the cap is
+    reached so that a cap never turns a flood into silence.
+
+    Note: Every event reaches CloudWatch regardless of the send decision.
     """
 
     # Create log stream if not exist or nop on already existing
@@ -174,10 +172,9 @@ def process_event_message(message: EventMessage):
     if message.event_level is EventLevel.WARN:
         metadata_hash = _metadata_hash(message)
 
-        notification_count = lookup_notification_count(metadata_hash)
-        if notification_count < MAX_DAILY_WARNS:
+        lookup_notification_count(metadata_hash)
+        if claim_notification_slot(metadata_hash, MAX_DAILY_WARNS) is not None:
             send_notification(message)
-            increment_notification_count(metadata_hash)
     elif message.event_level is EventLevel.ERROR:
         process_error_message(message)
     else:
@@ -214,10 +211,15 @@ def process_error_message(message: EventMessage):
     storm = evaluate_storm(metadata_hash)
 
     if storm['all_clear_count'] is not None:
-        send_storm_notification(message, 'cleared', storm['all_clear_count'])
+        send_storm_notification(
+            message, 'cleared', storm['all_clear_count'],
+            storm['window_seconds']
+        )
 
     if storm['summary_count'] is not None:
-        send_storm_notification(message, 'summary', storm['summary_count'])
+        send_storm_notification(
+            message, 'summary', storm['summary_count'], storm['window_seconds']
+        )
 
     if storm['suppress_individual']:
         logger.info(
@@ -226,17 +228,16 @@ def process_error_message(message: EventMessage):
         )
         return
 
-    notification_count = lookup_notification_count(metadata_hash)
+    lookup_notification_count(metadata_hash)
 
-    if notification_count < MAX_DAILY_ERRORS:
+    if claim_notification_slot(metadata_hash, MAX_DAILY_ERRORS) is not None:
         send_notification(message)
-        increment_notification_count(metadata_hash)
     elif claim_cap_notice(metadata_hash, date.today().isoformat()):
         logger.info(
             'Daily error notification cap reached for %s',
             message.collection_name
         )
-        send_storm_notification(message, 'cap', notification_count)
+        send_storm_notification(message, 'cap', MAX_DAILY_ERRORS)
 
 def send_notification(message: EventMessage):
     """
@@ -335,12 +336,17 @@ STORM_MESSAGES = {
 }
 
 
-def send_storm_notification(message: EventMessage, kind, count):
+def send_storm_notification(message: EventMessage, kind, count,
+                            window_seconds=None):
     """
     Sends either a storm summary, an all-clear, or a daily-cap notice.
     """
     title, headline, detail = STORM_MESSAGES[kind]
-    window = _describe_window(STORM_WINDOW_SECONDS)
+
+    if window_seconds is None:
+        window_seconds = STORM_WINDOW_SECONDS
+
+    window = _describe_window(window_seconds)
 
     fields = {
         'count': count,
@@ -399,7 +405,8 @@ def _no_storm():
     return {
         'suppress_individual': False,
         'summary_count': None,
-        'all_clear_count': None
+        'all_clear_count': None,
+        'window_seconds': None
     }
 
 
@@ -436,13 +443,16 @@ def _decide_within_window(message_hash, item):
     Decides what this event should be assigned as based on the window.
     """
     count = int(item.get('window_count', 0))
+    # The window in progress, which backoff may already have lengthened.
+    window_seconds = int(item.get('window_seconds', STORM_WINDOW_SECONDS))
 
     if bool(item.get('storm_active', False)):
         # Already storming. Summaries are emitted at window, not here.
         return {
             'suppress_individual': True,
             'summary_count': None,
-            'all_clear_count': None
+            'all_clear_count': None,
+            'window_seconds': window_seconds
         }
 
     if count == STORM_THRESHOLD + 1:
@@ -450,14 +460,16 @@ def _decide_within_window(message_hash, item):
         return {
             'suppress_individual': True,
             'summary_count': count,
-            'all_clear_count': None
+            'all_clear_count': None,
+            'window_seconds': window_seconds
         }
 
     if count > STORM_THRESHOLD:
         return {
             'suppress_individual': True,
             'summary_count': None,
-            'all_clear_count': None
+            'all_clear_count': None,
+            'window_seconds': window_seconds
         }
 
     return _no_storm()
@@ -521,14 +533,16 @@ def _roll_storm_window(message_hash, now):
         return {
             'suppress_individual': True,
             'summary_count': previous_count,
-            'all_clear_count': None
+            'all_clear_count': None,
+            'window_seconds': previous_seconds
         }
 
     if was_active:
         return {
             'suppress_individual': False,
             'summary_count': None,
-            'all_clear_count': previous_count
+            'all_clear_count': previous_count,
+            'window_seconds': previous_seconds
         }
 
     return _no_storm()
@@ -627,16 +641,23 @@ def lookup_notification_count(message_hash: str):
     # condition and this read.
     return response.get('Item', {}).get('count', 0)
 
-def increment_notification_count(message_hash: str):
+def claim_notification_slot(message_hash: str, limit: int):
     """
-    Increments notification count of the message_hash provided.
+    Returns the slot number claimed, counting from 1, or None when the cap is
+    already spent.
     """
-    notification_table.update_item(
-        Key={'message_hash': message_hash},
-        AttributeUpdates={
-            'count': {
-                'Value': 1,
-                'Action': 'ADD'
-            }
-        }
-    )
+    try:
+        response = notification_table.update_item(
+            Key={'message_hash': message_hash},
+            UpdateExpression='ADD #count :one',
+            ConditionExpression='#count < :limit',
+            ExpressionAttributeNames={'#count': 'count'},
+            ExpressionAttributeValues={':one': 1, ':limit': limit},
+            ReturnValues='ALL_NEW'
+        )
+        return int(response['Attributes']['count'])
+    except ClientError as ex:
+        if ex.response['Error']['Code'] != 'ConditionalCheckFailedException':
+            raise
+
+    return None
