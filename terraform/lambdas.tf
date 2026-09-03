@@ -277,6 +277,30 @@ resource "aws_ssm_parameter" "max_daily_warns" {
   type = "String"
 }
 
+resource "aws_ssm_parameter" "max_daily_errors" {
+  name = "${local.service_path}/max_daily_errors"
+  value = tostring(var.max_daily_errors)
+  type = "String"
+}
+
+resource "aws_ssm_parameter" "storm_threshold" {
+  name = "${local.service_path}/storm_threshold"
+  value = tostring(var.storm_threshold)
+  type = "String"
+}
+
+resource "aws_ssm_parameter" "storm_window_minutes" {
+  name = "${local.service_path}/storm_window_minutes"
+  value = tostring(var.storm_window_minutes)
+  type = "String"
+}
+
+resource "aws_ssm_parameter" "storm_summary_max_interval_minutes" {
+  name = "${local.service_path}/storm_summary_max_interval_minutes"
+  value = tostring(var.storm_summary_max_interval_minutes)
+  type = "String"
+}
+
 resource "aws_ssm_parameter" "muted_mode" {
   name = "${local.service_path}/muted_mode"
   value = tostring(var.muted_mode)
