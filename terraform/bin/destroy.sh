@@ -2,4 +2,5 @@
 set -eo pipefail
 
 source "$(dirname $BASH_SOURCE)/config.sh"
-terraform destroy
+
+terraform destroy "${TF_VAR_FILES[@]}"

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PO.DAAC Sigevent Notification</title>
+</head>
+<style>
+  body {{
+    font-family: sans-serif;
+  }}
+  .detail {{
+    color: #444;
+  }}
+</style>
+<body>
+  <h1>PO.DAAC Sigevent &mdash; {title}</h1>
+
+  <p><strong>{headline}</strong></p>
+
+  <p class="detail">{detail}</p>
+
+  <p class="detail">
+    Full event history for this collection is in the CloudWatch log group
+    <code>/service/sigevent</code>, log stream <code>{collection_name}</code>.
+  </p>
+</body>
+</html>

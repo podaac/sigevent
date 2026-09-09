@@ -129,8 +129,13 @@ dmypy.json
 .pyre/
 
 # Terraform
-terraform/tfplan
+terraform/tfplan*
 terraform/.terraform
+
+# Per-venue sensitive config: AWS account identifiers and notification recipients.
+# The template is committed; filled-in copies never are.
+terraform/secrets/*.tfvars
+!terraform/secrets/example.tfvars
 
 # Misc
 .DS_Store
