@@ -15,10 +15,12 @@ import json
 import boto3
 import jinja2
 
-from podaac.sigevent.message import EventMessage, EventLevel
+from podaac.sigevent.message import EventMessage, EventLevel, source_environment
 from podaac.sigevent.utilities import utils
 
 MAX_TABLE_SIZE = 10
+# Legacy deployments set no SIGEVENT_SOURCE_ENV, nor do emitters outside S6
+UNTAGGED_ENVIRONMENT = 'untagged'
 CLOUDWATCH_LOG_GROUP = utils.get_param('log_group')
 NOTIFICATION_EMAILS = json.loads(utils.get_param('notification_emails'))
 STAGE = utils.get_param('stage')
@@ -132,11 +134,13 @@ def analyze_messages(messages: list[EventMessage]) -> dict:
                 'level_counts': {
                     level: 0 for level in EventLevel
                 },
-                'category_counts': {}
+                'category_counts': {},
+                'environment_counts': {}
             }
 
         level_counts = analysis['level_counts']
         category_counts = analysis['category_counts']
+        environment_counts = analysis['environment_counts']
 
         level_counts[message.event_level] += 1
 
@@ -144,6 +148,11 @@ def analyze_messages(messages: list[EventMessage]) -> dict:
             category_counts[message.category] = 1
         else:
             category_counts[message.category] += 1
+
+        environment = source_environment(message.source_name) or \
+            UNTAGGED_ENVIRONMENT
+        environment_counts[environment] = \
+            environment_counts.get(environment, 0) + 1
 
     # Sort collections by levels; starting at ERROR as the primary sort key
     # and going down to DEBUG as the lowest sort key
@@ -158,13 +167,14 @@ def analyze_messages(messages: list[EventMessage]) -> dict:
         reverse=True
     )
 
-    # Sort collection's categories by counts
+    # Sort collection's categories and environments by counts
     for collection in analyses:
-        collection['category_counts'] = dict(sorted(
-            collection['category_counts'].items(),
-            key=lambda item: item[1],
-            reverse=True
-        ))
+        for counts in ('category_counts', 'environment_counts'):
+            collection[counts] = dict(sorted(
+                collection[counts].items(),
+                key=lambda item: item[1],
+                reverse=True
+            ))
 
     return analyses
 
@@ -181,7 +191,8 @@ def generate_csv_report(analyses: list[dict]) -> TemporaryFile:
         'Warnings',
         'Info',
         'Debug',
-        'Categories'
+        'Categories',
+        'Environment'
     ])
     writer.writeheader()
 
@@ -189,6 +200,7 @@ def generate_csv_report(analyses: list[dict]) -> TemporaryFile:
         name = analysis['name']
         level_counts = analysis['level_counts']
         category_counts = analysis['category_counts']
+        environment_counts = analysis['environment_counts']
 
         writer.writerow({
             'Collection Name': name,
@@ -199,6 +211,10 @@ def generate_csv_report(analyses: list[dict]) -> TemporaryFile:
             'Categories': '\n'.join([
                 f'{category}: {count}'
                 for category, count in category_counts.items()
+            ]),
+            'Environment': '\n'.join([
+                f'{environment}: {count}'
+                for environment, count in environment_counts.items()
             ])
         })
 
