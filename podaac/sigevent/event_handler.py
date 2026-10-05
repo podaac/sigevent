@@ -8,7 +8,10 @@ from importlib import resources
 import boto3
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
-from podaac.sigevent.message import EventMessage, EventLevel
+from podaac.sigevent.message import (
+    EventMessage, EventLevel, short_source, source_environment,
+    strip_environment
+)
 from podaac.sigevent.utilities import utils
 
 
@@ -183,13 +186,17 @@ def process_event_message(message: EventMessage):
 
 def _metadata_hash(message: EventMessage):
     """
-    The counter key: one bucket per level, per collection.
+    The counter key: one bucket per level, per collection, per deployment
+    environment. Each environment is counted separtely.
     """
-    return hashlib.sha1(
-        bytes(message.event_level.value, 'utf-8') + \
-        bytes(message.collection_name, 'utf-8'),
-        usedforsecurity=False
-    ).hexdigest()
+    key = bytes(message.event_level.value, 'utf-8') + \
+        bytes(message.collection_name, 'utf-8')
+
+    environment = source_environment(message.source_name)
+    if environment:
+        key += b'\x1f' + bytes(environment, 'utf-8')
+
+    return hashlib.sha1(key, usedforsecurity=False).hexdigest()
 
 
 def process_error_message(message: EventMessage):
@@ -239,6 +246,7 @@ def process_error_message(message: EventMessage):
         )
         send_storm_notification(message, 'cap', MAX_DAILY_ERRORS)
 
+
 def send_notification(message: EventMessage):
     """
     Sends notifications to interested parties via SES using a predefined
@@ -254,8 +262,15 @@ def send_notification(message: EventMessage):
     """
     today = date.today()
 
+    # The environment gets its own bracket, rather
+    # than staying nested inside the source. Untagged subjects are unchanged.
+    environment = source_environment(message.source_name)
+    environment_label = f' [{environment}]' if environment else ''
+    source = short_source(strip_environment(message.source_name))
+
     return send_email_to_recipients(
-        f'[{message.category}] {today} {message.collection_name}',
+        f'[{message.category}]{environment_label} [{source}] '
+        f'{today} {message.collection_name}',
         NOTIFICATION_TEMPLATE.format(
             raw_message=html.escape(message.model_dump_json()))
     )
@@ -317,7 +332,7 @@ STORM_MESSAGES = {
     'summary': (
         'Error storm',
         '{count} errors from {collection} in the last {window}.',
-        'Individual notifications are paused for this collection while the '
+        'Individual notifications are paused for {scope} while the '
         'burst continues. Every event is still recorded in CloudWatch.'
     ),
     'cleared': (
@@ -348,18 +363,36 @@ def send_storm_notification(message: EventMessage, kind, count,
 
     window = _describe_window(window_seconds)
 
+    # Counters are kept per environment, i.e., another environment's events 
+    # for the same collection are still being emailed.
+    environment = source_environment(message.source_name)
+
+    if environment:
+        environment_label = f' [{environment}]'
+        collection = f'{message.collection_name} ({environment})'
+        scope = f'this collection in {environment}'
+    else:
+        environment_label = ''
+        collection = message.collection_name
+        scope = 'this collection'
+
     fields = {
         'count': count,
-        'collection': message.collection_name,
+        'collection': collection,
+        'scope': scope,
         'window': window
     }
 
-    subject = f'[{title.upper()}] {date.today()} {message.collection_name}'
+    subject = (
+        f'[{title.upper()}]{environment_label} '
+        f'{date.today()} {message.collection_name}'
+    )
     body = STORM_TEMPLATE.format(
         title=html.escape(title),
         headline=html.escape(headline.format(**fields)),
         detail=html.escape(detail.format(**fields)),
-        collection_name=html.escape(message.collection_name)
+        collection_name=html.escape(message.collection_name),
+        source=html.escape(short_source(message.source_name))
     )
 
     return send_email_to_recipients(subject, body)
@@ -375,14 +408,11 @@ def _describe_window(seconds):
     hours = minutes // 60
     return '1 hour' if hours == 1 else f'{hours} hours'
 
-# Window are counters in storm detection.
+# Window are counters used in storm detection.
 # window_ends_at  epoch seconds; the window is live while now < this
 # window_count    events counted in the current window
 # window_seconds  current window length, doubled on each roll while storming
 # storm_active    individual notifications are currently suppressed
-#
-# window_ends_at is stored absolute rather than as start, length becuse a
-# DynamoDB condition expression cannot do arithmetic on attributes
 
 STORM_NAMES = {
     '#window_ends_at': 'window_ends_at',
