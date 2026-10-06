@@ -20,6 +20,12 @@
   <p class="detail">{detail}</p>
 
   <p class="detail">
+    Reported by <code>{source}</code>. Storm counts are tracked per collection
+    and per deployment environment rather than per source, so other sources in
+    the same environment can contribute to this total.
+  </p>
+
+  <p class="detail">
     Full event history for this collection is in the CloudWatch log group
     <code>/service/sigevent</code>, log stream <code>{collection_name}</code>.
   </p>

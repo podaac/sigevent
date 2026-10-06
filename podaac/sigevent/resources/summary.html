@@ -24,6 +24,7 @@ table, th, td {
             <th>Info</th>
             <th>Debug</th>
             <th>Categories</th>
+            <th>Environment</th>
         </tr>
         {% for collection in analyses %}
         <tr>
@@ -34,6 +35,11 @@ table, th, td {
             <td>
                 {% for category, count in collection['category_counts'].items() %}
                     {{ category }}: {{ count }}<br>
+                {% endfor %}
+            </td>
+            <td>
+                {% for environment, count in collection['environment_counts'].items() %}
+                    {{ environment|e }}: {{ count }}<br>
                 {% endfor %}
             </td>
         </tr>
