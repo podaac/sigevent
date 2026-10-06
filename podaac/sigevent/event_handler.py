@@ -9,8 +9,7 @@ import boto3
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
 from podaac.sigevent.message import (
-    EventMessage, EventLevel, short_source, source_environment,
-    strip_environment
+    EventMessage, EventLevel, short_source, source_environment
 )
 from podaac.sigevent.utilities import utils
 
@@ -262,14 +261,13 @@ def send_notification(message: EventMessage):
     """
     today = date.today()
 
-    # The environment gets its own bracket, rather
-    # than staying nested inside the source. Untagged subjects are unchanged.
+    # A tagged event names its environment in its own bracket. Untagged
+    # subjects are unchanged from before environments were introduced.
     environment = source_environment(message.source_name)
     environment_label = f' [{environment}]' if environment else ''
-    source = short_source(strip_environment(message.source_name))
 
     return send_email_to_recipients(
-        f'[{message.category}]{environment_label} [{source}] '
+        f'[{message.category}]{environment_label} '
         f'{today} {message.collection_name}',
         NOTIFICATION_TEMPLATE.format(
             raw_message=html.escape(message.model_dump_json()))
