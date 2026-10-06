@@ -1,6 +1,7 @@
 """Classes representing input messages from Sigevent emitters"""
 from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -57,3 +58,42 @@ class EventMessage(BaseModel):
                f'executor={self.executor}, ' \
                f'timestamp={self.timestamp}' \
                f')'
+
+
+MAX_SHORT_SOURCE_CHARS = 80
+
+_ENVIRONMENT_TAG = re.compile(r'\[([^\[\]\s]+)\]$')
+
+
+def short_source(source_name: str) -> str:
+    """
+    source_name updated to display in a subjct line.
+    """
+    if source_name.startswith('arn:'):
+        short = source_name.rsplit(':', 1)[-1]
+    else:
+        short = source_name
+
+    if len(short) > MAX_SHORT_SOURCE_CHARS:
+        short = short[:MAX_SHORT_SOURCE_CHARS - 3] + '...'
+
+    return short
+
+
+def source_environment(source_name: str) -> str:
+    """
+    The deployment environment an event came from, or '' when it is untagged.
+
+    CC sets SIGEVENT_SOURCE_ENV s.t. its events arrive as 
+    e.g. SAFE_unpack.py[cc:cnsld-cumulus-prod]; legacy
+    sets nothing, so an untagged source is how legacy is identified.
+    """
+    match = _ENVIRONMENT_TAG.search(source_name)
+    return match.group(1) if match else ''
+
+
+def strip_environment(source_name: str) -> str:
+    """
+    source_name without its trailing environment tag, if it has one
+    """
+    return _ENVIRONMENT_TAG.sub('', source_name)
